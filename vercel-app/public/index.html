@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<!--
+  NDL UNLOCK PAGE
+  ═══════════════
+  Hosted on Vercel at  ndl-unlock.vercel.app
+
+  Flow:
+    1. Page loads → fetches config from /api/config
+    2. Shows "Tap anywhere to continue"
+    3. User taps → ad popunders open in new tabs (browser allows because user gesture)
+    4. 10s countdown runs silently in background
+    5. Auto-redirects to t.me/Bot?start=TOKEN
+
+  Admin: change ad links in Vercel dashboard → Environment Variables
+         AD1_URL, AD2_URL, BOT_USERNAME, WAIT_SECONDS
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
+  <meta name="theme-color" content="#0d1117"/>
+  <title>Unlock Your File</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --green:  #2ea043;
+      --green2: #238636;
+      --bg:     #0d1117;
+      --card:   #161b22;
+      --border: #30363d;
+      --text:   #e6edf3;
+      --muted:  #8b949e;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+
+    /* Full-page tap target */
+    #tapzone {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      background: var(--bg);
+      z-index: 10;
+    }
+
+    #tapzone:active { background: #111820; }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 40px 28px;
+      width: 90%;
+      max-width: 400px;
+      text-align: center;
+      pointer-events: none;  /* card doesn't block tap */
+    }
+
+    .logo { font-size: 56px; margin-bottom: 20px; display: block; }
+
+    .title {
+      font-size: 24px;
+      font-weight: 800;
+      margin-bottom: 10px;
+      color: #f0f6fc;
+    }
+
+    .subtitle {
+      font-size: 15px;
+      color: var(--muted);
+      line-height: 1.6;
+      margin-bottom: 32px;
+    }
+
+    /* Pulsing tap indicator */
+    .tap-indicator {
+      width: 80px; height: 80px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--green2), var(--green));
+      margin: 0 auto 16px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 34px;
+      box-shadow: 0 0 0 0 rgba(46,160,67,.5);
+      animation: pulse 1.8s infinite;
+    }
+
+    @keyframes pulse {
+      0%   { box-shadow: 0 0 0 0  rgba(46,160,67,.5); }
+      70%  { box-shadow: 0 0 0 18px rgba(46,160,67,0); }
+      100% { box-shadow: 0 0 0 0  rgba(46,160,67,0); }
+    }
+
+    .tap-label {
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--green);
+      letter-spacing: .5px;
+    }
+
+    /* ── COUNTDOWN SCREEN (hidden until tap) ── */
+    #countscreen {
+      display: none;
+      position: fixed; inset: 0;
+      background: var(--bg);
+      align-items: center; justify-content: center;
+      z-index: 20;
+    }
+
+    #countscreen.show { display: flex; }
+
+    .count-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 44px 32px;
+      width: 90%;
+      max-width: 380px;
+      text-align: center;
+    }
+
+    .count-title {
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 6px;
+      color: #f0f6fc;
+    }
+
+    .count-sub {
+      font-size: 14px;
+      color: var(--muted);
+      margin-bottom: 32px;
+    }
+
+    /* Progress ring */
+    .ring-wrap {
+      position: relative;
+      width: 110px; height: 110px;
+      margin: 0 auto 24px;
+    }
+
+    .ring-bg   { fill: none; stroke: var(--border); stroke-width: 9; }
+    .ring-fill {
+      fill: none; stroke: var(--green); stroke-width: 9;
+      stroke-linecap: round;
+      stroke-dasharray: 314;    /* 2π × 50 */
+      stroke-dashoffset: 0;
+      transform: rotate(-90deg);
+      transform-origin: 50% 50%;
+      transition: stroke-dashoffset 1s linear, stroke .3s;
+    }
+
+    .ring-num {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 30px;
+      font-weight: 800;
+      color: var(--green);
+    }
+
+    .redirecting {
+      font-size: 15px;
+      color: var(--muted);
+    }
+
+    /* ── ERROR ── */
+    #errscreen {
+      display: none;
+      position: fixed; inset: 0;
+      background: var(--bg);
+      align-items: center; justify-content: center;
+    }
+
+    #errscreen.show { display: flex; }
+
+    .err-card {
+      background: var(--card);
+      border: 1px solid #f85149;
+      border-radius: 16px;
+      padding: 32px 24px;
+      max-width: 360px;
+      width: 90%;
+      text-align: center;
+    }
+
+    .err-icon  { font-size: 44px; margin-bottom: 12px; }
+    .err-title { font-size: 20px; font-weight: 700; color: #f85149; margin-bottom: 8px; }
+    .err-msg   { font-size: 14px; color: var(--muted); line-height: 1.5; }
+  </style>
+</head>
+<body>
+
+<!-- ── TAP ZONE ─────────────────────────────────────────── -->
+<div id="tapzone">
+  <div class="card">
+    <span class="logo">🎬</span>
+    <h1 class="title">Your File is Ready!</h1>
+    <p class="subtitle">One quick step and your movie<br>will be sent directly to you.</p>
+    <div class="tap-indicator">👆</div>
+    <p class="tap-label">Tap anywhere to continue</p>
+  </div>
+</div>
+
+<!-- ── COUNTDOWN SCREEN ─────────────────────────────────── -->
+<div id="countscreen">
+  <div class="count-card">
+    <p class="count-title">Almost there!</p>
+    <p class="count-sub">Redirecting you to your file…</p>
+    <div class="ring-wrap">
+      <svg viewBox="0 0 110 110" width="110" height="110">
+        <circle class="ring-bg"   cx="55" cy="55" r="50"/>
+        <circle class="ring-fill" id="ring" cx="55" cy="55" r="50"/>
+      </svg>
+      <div class="ring-num" id="ringnum">10</div>
+    </div>
+    <p class="redirecting">Opening Telegram…</p>
+  </div>
+</div>
+
+<!-- ── ERROR SCREEN ─────────────────────────────────────── -->
+<div id="errscreen">
+  <div class="err-card">
+    <div class="err-icon">❌</div>
+    <h2 class="err-title" id="errtitle">Invalid Link</h2>
+    <p class="err-msg"   id="errmsg">This link is invalid or has expired. Please tap ⬇️ DOWNLOAD HERE again in Telegram to get a new link.</p>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ── helpers ────────────────────────────────────────────
+  function qs(sel) { return document.querySelector(sel); }
+  function show(id, cls) { var el = document.getElementById(id); el.classList.add(cls || "show"); }
+  function hide(id) { document.getElementById(id).style.display = "none"; }
+  function showErr(title, msg) {
+    qs("#errtitle").textContent = title;
+    qs("#errmsg").textContent   = msg;
+    hide("tapzone");
+    hide("countscreen");
+    show("errscreen");
+  }
+
+  // ── read token from URL ─────────────────────────────────
+  var params = new URLSearchParams(window.location.search);
+  var token  = params.get("token") || "";
+
+  if (!token) {
+    showErr("Missing Token", "No download token found in this link. Please use the Download button in Telegram.");
+    return;
+  }
+
+  if (!/^[A-Z0-9]{8}$/.test(token)) {
+    showErr("Invalid Token", "This link looks incorrect. Please tap ⬇️ DOWNLOAD HERE again in Telegram.");
+    return;
+  }
+
+  // ── fetch config from /api/config ──────────────────────
+  var cfg = { bot: "YourBotUsername", ad1: "", ad2: "", waitSecs: 10 };
+
+  fetch("/api/config")
+    .then(function (r) { return r.json(); })
+    .then(function (data) { cfg = data; })
+    .catch(function () { /* use defaults */ });
+
+  // ── tap handler ─────────────────────────────────────────
+  var tapped = false;
+
+  document.getElementById("tapzone").addEventListener("click", function onTap() {
+    if (tapped) return;
+    tapped = true;
+
+    // Open ad links in new tabs (browser allows because of user gesture)
+    if (cfg.ad1) {
+      try { window.open(cfg.ad1, "_blank", "noopener"); } catch (e) {}
+    }
+    if (cfg.ad2) {
+      // Slight delay so browser doesn't block second popup
+      setTimeout(function () {
+        try { window.open(cfg.ad2, "_blank", "noopener"); } catch (e) {}
+      }, 400);
+    }
+
+    // Show countdown screen
+    hide("tapzone");
+    show("countscreen");
+    startCountdown(cfg.waitSecs || 10);
+  });
+
+  // ── countdown ───────────────────────────────────────────
+  var CIRCUM = 2 * Math.PI * 50;  // r=50
+
+  function startCountdown(secs) {
+    var ring    = document.getElementById("ring");
+    var ringnum = document.getElementById("ringnum");
+
+    ring.style.strokeDasharray  = CIRCUM;
+    ring.style.strokeDashoffset = 0;
+
+    var remaining = secs;
+    ringnum.textContent = remaining;
+
+    var interval = setInterval(function () {
+      remaining--;
+      ringnum.textContent = remaining;
+
+      var progress = remaining / secs;
+      ring.style.strokeDashoffset = CIRCUM * (1 - progress);
+
+      // Turn orange in last 3 seconds
+      if (remaining <= 3) {
+        ring.style.stroke      = "#f0883e";
+        ringnum.style.color    = "#f0883e";
+      }
+
+      if (remaining <= 0) {
+        clearInterval(interval);
+        redirect();
+      }
+    }, 1000);
+  }
+
+  // ── redirect to Telegram ─────────────────────────────────
+  function redirect() {
+    var bot   = cfg.bot || "YourBotUsername";
+    var tgUrl = "https://t.me/" + bot + "?start=" + token;
+
+    // Try tg:// deep link first (opens Telegram app directly on mobile)
+    // This is critical for iOS Telegram in-app browser
+    var tgDeep = "tg://resolve?domain=" + bot + "&start=" + token;
+
+    // On iOS WKWebView (Telegram in-app), location.href works for tg://
+    window.location.href = tgDeep;
+
+    // Fallback after 1.2s: use https://t.me (works on desktop + Android + iOS Safari)
+    setTimeout(function () {
+      window.location.href = tgUrl;
+    }, 1200);
+  }
+
+}());
+</script>
+</body>
+</html>
